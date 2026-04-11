@@ -2,6 +2,21 @@
   "name": "AiProviderKit",
   "version": "0.1.0",
   "description": "Modular AI provider abstraction for OpenAI, Claude, OpenRouter, Ollama, and llama.cpp",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jahrulnr/esp32-ai-adapter.git"
+  },
+  "homepage": "https://github.com/jahrulnr/esp32-ai-adapter",
+  "keywords": [
+    "esp32",
+    "arduino",
+    "ai",
+    "openai",
+    "openrouter",
+    "adapter",
+    "llama",
+    "ollama"
+  ],
   "frameworks": "arduino",
   "platforms": "espressif32",
   "dependencies": [

@@ -2,6 +2,18 @@
 
 AiProviderKit is a local PlatformIO library that provides a single interface for multiple AI backends while keeping each provider isolated in its own folder.
 
+Public repository name is `esp32-ai-adapter`, while the in-code library identity remains `AiProviderKit`.
+
+## Installation
+
+PlatformIO (`platformio.ini`):
+
+```ini
+[env:your_env]
+lib_deps =
+	https://github.com/jahrulnr/esp32-ai-adapter.git
+```
+
 ## Why this exists
 
 - Keep app-level AI calls provider-agnostic.
