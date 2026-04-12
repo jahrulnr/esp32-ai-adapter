@@ -1,6 +1,34 @@
 #include "core/ai_tool_runtime_executor.h"
 
+#include <esp_heap_caps.h>
+#include <new>
+
 namespace ai::provider {
+namespace {
+
+AiInvokeRequest* allocateInvokeRequestCopy(const AiInvokeRequest& source) {
+  void* memory = heap_caps_calloc(1, sizeof(AiInvokeRequest), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (memory == nullptr) {
+    memory = heap_caps_calloc(1, sizeof(AiInvokeRequest), MALLOC_CAP_8BIT);
+  }
+
+  if (memory == nullptr) {
+    return nullptr;
+  }
+
+  return ::new (memory) AiInvokeRequest(source);
+}
+
+void releaseInvokeRequest(AiInvokeRequest* request) {
+  if (request == nullptr) {
+    return;
+  }
+
+  request->~AiInvokeRequest();
+  heap_caps_free(request);
+}
+
+}  // namespace
 
 AiToolRuntimeExecutor::AiToolRuntimeExecutor(const AiToolRuntimeRegistry& registry)
     : registry_(registry) {}
@@ -15,9 +43,16 @@ bool AiToolRuntimeExecutor::invokeHttpWithTools(
   outErrorMessage = String();
   outResponse = AiInvokeResponse{};
 
-  AiInvokeRequest working = request;
+  auto* workingPtr = allocateInvokeRequestCopy(request);
+  if (workingPtr == nullptr) {
+    outErrorMessage = "Insufficient memory for invoke request";
+    return false;
+  }
+
+  AiInvokeRequest& working = *workingPtr;
   if (working.enableToolCalls && working.toolCount == 0 && registry_.size() > 0) {
     if (!registry_.appendToolDefinitionsToRequest(working, outErrorMessage)) {
+      releaseInvokeRequest(workingPtr);
       return false;
     }
   }
@@ -34,13 +69,14 @@ bool AiToolRuntimeExecutor::invokeHttpWithTools(
         outErrorMessage = response.errorMessage.length() > 0 ? response.errorMessage
                                                              : String("Invoke failed");
       }
+      releaseInvokeRequest(workingPtr);
       return ok;
     }
 
-    AiInvokeRequest next = working;
     String seedError;
-    if (!ensureSeedMessages(next, seedError)) {
+    if (!ensureSeedMessages(working, seedError)) {
       outErrorMessage = seedError;
+      releaseInvokeRequest(workingPtr);
       return false;
     }
 
@@ -52,6 +88,7 @@ bool AiToolRuntimeExecutor::invokeHttpWithTools(
       if (!registry_.onCall(call, toolResult, toolError)) {
         if (!options.continueOnToolError) {
           outErrorMessage = toolError.length() > 0 ? toolError : String("Tool onCall failed");
+          releaseInvokeRequest(workingPtr);
           return false;
         }
         toolResult = toJsonErrorObject(toolError.length() > 0 ? toolError : String("onCall failed"));
@@ -62,17 +99,18 @@ bool AiToolRuntimeExecutor::invokeHttpWithTools(
       toolMessage.content = toolResult;
       toolMessage.toolCallId = call.id;
       toolMessage.toolName = call.name;
-      if (!next.addMessage(toolMessage)) {
+      if (!working.addMessage(toolMessage)) {
         outErrorMessage = "Unable to append tool message to request";
+        releaseInvokeRequest(workingPtr);
         return false;
       }
     }
 
-    next.enableToolCalls = true;
-    working = next;
+    working.enableToolCalls = true;
   }
 
   outErrorMessage = "Maximum HTTP tool loop rounds reached";
+  releaseInvokeRequest(workingPtr);
   return false;
 }
 

@@ -4,6 +4,8 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <lwip/netdb.h>
+#include <lwip/sockets.h>
 
 #if defined(ESP32) && __has_include(<esp_heap_caps.h>)
 #include <esp_heap_caps.h>
@@ -181,6 +183,42 @@ String extractOllamaDelta(SpiJsonDocument& doc, bool& outDone, String& outDoneRe
   }
 
   return String();
+}
+
+bool resolveHostIpv4(const String& host, IPAddress& outAddress) {
+  if (host.length() == 0) {
+    return false;
+  }
+
+  if (outAddress.fromString(host)) {
+    return true;
+  }
+
+  struct addrinfo hints;
+  std::memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_STREAM;
+
+  struct addrinfo* result = nullptr;
+  const int rc = lwip_getaddrinfo(host.c_str(), "0", &hints, &result);
+  if (rc != 0 || result == nullptr) {
+    return false;
+  }
+
+  bool resolved = false;
+  for (struct addrinfo* current = result; current != nullptr; current = current->ai_next) {
+    if (current->ai_family != AF_INET || current->ai_addr == nullptr) {
+      continue;
+    }
+
+    const auto* ipv4 = reinterpret_cast<const struct sockaddr_in*>(current->ai_addr);
+    outAddress = IPAddress(ipv4->sin_addr.s_addr);
+    resolved = true;
+    break;
+  }
+
+  lwip_freeaddrinfo(result);
+  return resolved;
 }
 
 }  // namespace
@@ -442,7 +480,27 @@ bool CustomHttpTransport::connectAndSend(const AiHttpRequest& request,
     activeClient_ = &plainClient_;
   }
 
-  if (!activeClient_->connect(urlParts.host.c_str(), urlParts.port)) {
+  IPAddress resolvedAddress;
+  if (!resolveHostIpv4(urlParts.host, resolvedAddress)) {
+    outErrorMessage = "resolve_failed";
+    activeClient_ = nullptr;
+    return false;
+  }
+
+  bool connected = false;
+  if (urlParts.tls) {
+    connected = secureClient_.connect(resolvedAddress,
+                                      urlParts.port,
+                                      urlParts.host.c_str(),
+                                      nullptr,
+                                      nullptr,
+                                      nullptr)
+                == 1;
+  } else {
+    connected = plainClient_.connect(resolvedAddress, urlParts.port) == 1;
+  }
+
+  if (!connected) {
     outErrorMessage = "connect_failed";
     activeClient_ = nullptr;
     return false;
