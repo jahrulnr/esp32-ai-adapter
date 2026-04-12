@@ -2,6 +2,25 @@
 
 namespace ai::provider {
 
+bool AiToolRuntimeRegistry::setMax(size_t maxEntries) {
+  if (maxEntries == 0 || maxEntries > kMaxEntries) {
+    return false;
+  }
+
+  if (maxEntries < activeMaxEntries_) {
+    for (size_t i = maxEntries; i < entries_.size(); ++i) {
+      entries_[i] = Entry{};
+    }
+  }
+
+  activeMaxEntries_ = maxEntries;
+  return true;
+}
+
+size_t AiToolRuntimeRegistry::max() const {
+  return activeMaxEntries_;
+}
+
 bool AiToolRuntimeRegistry::registerTool(const AiToolDefinition& definition,
                                          AiToolOnCallCallback onCall,
                                          void* userContext,
@@ -26,7 +45,8 @@ bool AiToolRuntimeRegistry::registerTool(const AiToolDefinition& definition,
     return true;
   }
 
-  for (Entry& entry : entries_) {
+  for (size_t i = 0; i < activeMaxEntries_; ++i) {
+    Entry& entry = entries_[i];
     if (entry.used) {
       continue;
     }
@@ -76,7 +96,8 @@ bool AiToolRuntimeRegistry::appendToolDefinitionsToRequest(AiInvokeRequest& requ
                                                            String& outErrorMessage) const {
   outErrorMessage = String();
 
-  for (const Entry& entry : entries_) {
+  for (size_t i = 0; i < activeMaxEntries_; ++i) {
+    const Entry& entry = entries_[i];
     if (!entry.used) {
       continue;
     }
@@ -93,7 +114,8 @@ bool AiToolRuntimeRegistry::appendToolDefinitionsToRequest(AiInvokeRequest& requ
 
 size_t AiToolRuntimeRegistry::size() const {
   size_t count = 0;
-  for (const Entry& entry : entries_) {
+  for (size_t i = 0; i < activeMaxEntries_; ++i) {
+    const Entry& entry = entries_[i];
     if (entry.used) {
       ++count;
     }
@@ -102,7 +124,8 @@ size_t AiToolRuntimeRegistry::size() const {
 }
 
 AiToolRuntimeRegistry::Entry* AiToolRuntimeRegistry::findMutableByName(const String& toolName) {
-  for (Entry& entry : entries_) {
+  for (size_t i = 0; i < activeMaxEntries_; ++i) {
+    Entry& entry = entries_[i];
     if (!entry.used) {
       continue;
     }
@@ -114,7 +137,8 @@ AiToolRuntimeRegistry::Entry* AiToolRuntimeRegistry::findMutableByName(const Str
 }
 
 const AiToolRuntimeRegistry::Entry* AiToolRuntimeRegistry::findByName(const String& toolName) const {
-  for (const Entry& entry : entries_) {
+  for (size_t i = 0; i < activeMaxEntries_; ++i) {
+    const Entry& entry = entries_[i];
     if (!entry.used) {
       continue;
     }

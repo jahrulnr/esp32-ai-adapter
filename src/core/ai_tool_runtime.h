@@ -14,6 +14,9 @@ using AiToolOnCallCallback =
 
 class AiToolRuntimeRegistry {
  public:
+  bool setMax(size_t maxEntries);
+  size_t max() const;
+
   bool registerTool(const AiToolDefinition& definition,
                     AiToolOnCallCallback onCall,
                     void* userContext,
@@ -39,6 +42,7 @@ class AiToolRuntimeRegistry {
   };
 
   static constexpr size_t kMaxEntries = kAiMaxTools;
+  size_t activeMaxEntries_ = kAiMaxTools;
   std::array<Entry, kMaxEntries> entries_{};
 
   Entry* findMutableByName(const String& toolName);

@@ -142,7 +142,7 @@ struct AiRequestBodySpoolOptions {
 };
 
 constexpr size_t kAiMaxMessages = 16;
-constexpr size_t kAiMaxTools = 8;
+constexpr size_t kAiMaxTools = 50;
 constexpr size_t kAiMaxToolCalls = 8;
 
 struct AiSpeechToTextRequest {
