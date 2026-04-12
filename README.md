@@ -68,6 +68,63 @@ lib_deps =
 - AiProviderClient orchestrates build request -> transport execute -> parse response.
 - AiAudioClient orchestrates build request -> transport execute -> parse response for STT/TTS.
 
+## Skill Store
+
+- `core/ai_skill.h` provides a lightweight in-memory skill store class named `Skill`.
+- CRUD-style operations are available:
+	- `Add` to insert a new skill item.
+	- `List` to retrieve all active skill items.
+	- `Get` to fetch one skill by id.
+	- `Remove` to delete one skill by id.
+	- `Update` to replace an existing skill record.
+- Memory behavior can be tuned with `ConfigureMemory`:
+	- `preferPsrAm=true` applies ESP32 external-memory malloc preference (`heap_caps_malloc_extmem_enable`).
+	- `extmemAlwaysInternalThreshold` controls small-allocation internal-memory bias.
+- Persistence methods are available:
+	- `SaveToFs` / `LoadFromFs` for JSON file storage (LittleFS/SPIFFS/SD via `fs::FS`).
+	- `SaveToNvs` / `LoadFromNvs` for NVS blob storage with strict `maxBytes` guard.
+
+Minimal snippet:
+
+```cpp
+#include <core/ai_skill.h>
+
+using namespace ai::provider;
+
+Skill store;
+String error;
+
+AiSkillMemoryConfig memConfig;
+memConfig.preferPsrAm = true;
+memConfig.extmemAlwaysInternalThreshold = 64;
+store.ConfigureMemory(memConfig, error);
+
+AiSkillItem item;
+item.id = "weather";
+item.name = "Weather Analyst";
+item.description = "Handle weather lookups";
+item.instructions = "Always include unit and city";
+
+store.Add(item, error);
+
+AiSkillList list;
+store.List(list);
+
+AiSkillItem one;
+store.Get("weather", one);
+
+item.description = "Handle weather lookups and summarize";
+store.Update("weather", item, error);
+
+store.SaveToFs(LittleFS, "/skills.json", error);
+store.LoadFromFs(LittleFS, "/skills.json", error);
+
+store.SaveToNvs("aikit_sk", "payload", 2048, error);
+store.LoadFromNvs("aikit_sk", "payload", 2048, error);
+
+store.Remove("weather");
+```
+
 ## Speech and Audio (STT/TTS)
 
 - `core/ai_audio_client.h` provides sync + async methods for:
