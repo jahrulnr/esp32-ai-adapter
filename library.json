@@ -21,8 +21,8 @@
   "platforms": "espressif32",
   "dependencies": [
     {
-      "name": "bblanchon/ArduinoJson",
-      "version": "^7.4.3"
+      "name": "SpiJsonDocument",
+      "version": "https://github.com/jahrulnr/SpiJsonDocument.git"
     },
     {
       "name": "links2004/WebSockets",
