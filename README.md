@@ -68,6 +68,46 @@ lib_deps =
 - AiProviderClient orchestrates build request -> transport execute -> parse response.
 - AiAudioClient orchestrates build request -> transport execute -> parse response for STT/TTS.
 
+## Chat Session Memory Store
+
+`core/ai_chat_session_store.h` provides reusable conversation memory primitives for embedded runtimes.
+
+Main types:
+- `IAiChatSessionStore`: interface for app-layer injection and mocking.
+- `AiChatSessionStore`: filesystem-backed implementation (LittleFS/SD compatible).
+- `AiChatSessionStoreConfig`: expiry, cleanup cadence, compaction, and size guardrails.
+
+Supported operations:
+- Storage and path setup: `setStorage`, `setMemoryPath`, `setSkillsPath`, `begin`
+- Session lifecycle: `openChat`, `touch`, `markInFlight`, `deleteChat`/`reset`
+- Context reconstruction: `buildContextMessages`
+- Retention control: `compactChat`, `cleanupChat`/`runMandatoryCleanup`
+- Observability: `status`/`chatDetails`
+
+Behavior notes:
+- Session files are stored as JSONL for append-friendly writes.
+- Compaction keeps latest turns and inserts a deterministic summary record.
+- Cleanup enforces expiry and total-bytes hard limit with orphan file sweep.
+- Unknown future role/text fields are ignored safely during line parsing.
+
+Minimal setup:
+
+```cpp
+#include <core/ai_chat_session_store.h>
+
+using namespace ai::provider;
+
+AiChatSessionStoreConfig cfg;
+cfg.memoryPath = "/cache/chat_sessions";
+cfg.expiryMs = 30UL * 60UL * 1000UL;
+
+AiChatSessionStore store(cfg);
+store.setStorage(&LittleFS);
+store.begin();
+store.openChat("session-1", millis());
+store.appendTurn("session-1", "user", "Halo", millis());
+```
+
 ## Skill Store
 
 - `core/ai_skill.h` provides a lightweight in-memory skill store class named `Skill`.
