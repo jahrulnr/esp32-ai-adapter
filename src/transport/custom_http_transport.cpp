@@ -28,12 +28,81 @@
 #define AI_HAS_ESP32_HEAP_CAPS 0
 #endif
 
+#if defined(ESP32) && __has_include(<mbedtls/platform.h>)
+#include <mbedtls/platform.h>
+#define AI_HAS_MBEDTLS_PLATFORM_ALLOC 1
+#else
+#define AI_HAS_MBEDTLS_PLATFORM_ALLOC 0
+#endif
+
 namespace ai::provider {
 
 namespace {
 
 #if AI_HAS_ESP_LOG
 constexpr const char* kTag = "AI_HTTP_TX";
+#endif
+
+#if AI_HAS_MBEDTLS_PLATFORM_ALLOC
+bool gMbedTlsAllocatorConfigured = false;
+bool gMbedTlsAllocatorConfigFailed = false;
+
+void* mbedTlsPsrAmCalloc(size_t n, size_t size) {
+  if (n == 0 || size == 0 || size > (SIZE_MAX / n)) {
+    return nullptr;
+  }
+
+#if AI_HAS_ESP32_HEAP_CAPS
+  void* ptr = heap_caps_calloc(n, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (ptr != nullptr) {
+    return ptr;
+  }
+  return heap_caps_calloc(n, size, MALLOC_CAP_8BIT);
+#else
+  return std::calloc(n, size);
+#endif
+}
+
+void mbedTlsPsrAmFree(void* ptr) {
+  if (ptr == nullptr) {
+    return;
+  }
+
+#if AI_HAS_ESP32_HEAP_CAPS
+  heap_caps_free(ptr);
+#else
+  std::free(ptr);
+#endif
+}
+
+bool ensureMbedTlsAllocatorForPsrAm() {
+  if (gMbedTlsAllocatorConfigured) {
+    return true;
+  }
+
+  if (gMbedTlsAllocatorConfigFailed) {
+    return false;
+  }
+
+  const int rc = mbedtls_platform_set_calloc_free(mbedTlsPsrAmCalloc, mbedTlsPsrAmFree);
+  if (rc == 0) {
+    gMbedTlsAllocatorConfigured = true;
+#if AI_HAS_ESP_LOG
+    ESP_LOGW(kTag, "mbedTLS allocator switched to PSRAM-preferred mode");
+#endif
+    return true;
+  }
+
+  gMbedTlsAllocatorConfigFailed = true;
+#if AI_HAS_ESP_LOG
+  ESP_LOGW(kTag, "mbedTLS allocator switch failed rc=%d", rc);
+#endif
+  return false;
+}
+#else
+bool ensureMbedTlsAllocatorForPsrAm() {
+  return false;
+}
 #endif
 
 void* allocBytes(size_t size, bool preferPsrAm) {
@@ -203,6 +272,66 @@ String extractOllamaDelta(SpiJsonDocument& doc, bool& outDone, String& outDoneRe
   return String();
 }
 
+bool parseHexChunkSize(const String& line, size_t& outSize) {
+  String token = line;
+  token.trim();
+  const int extSep = token.indexOf(';');
+  if (extSep >= 0) {
+    token = token.substring(0, extSep);
+    token.trim();
+  }
+
+  if (token.length() == 0) {
+    return false;
+  }
+
+  char* endPtr = nullptr;
+  const unsigned long value = std::strtoul(token.c_str(), &endPtr, 16);
+  if (endPtr == token.c_str() || *endPtr != '\0') {
+    return false;
+  }
+
+  outSize = static_cast<size_t>(value);
+  return true;
+}
+
+bool decodeChunkedBody(const String& rawBody, String& outDecoded) {
+  outDecoded = "";
+  size_t cursor = 0;
+  while (cursor < static_cast<size_t>(rawBody.length())) {
+    const int lineEnd = rawBody.indexOf("\r\n", static_cast<unsigned int>(cursor));
+    if (lineEnd < 0) {
+      return false;
+    }
+
+    size_t chunkSize = 0;
+    if (!parseHexChunkSize(rawBody.substring(cursor, static_cast<size_t>(lineEnd)), chunkSize)) {
+      return false;
+    }
+
+    cursor = static_cast<size_t>(lineEnd) + 2;
+    if (chunkSize == 0) {
+      return true;
+    }
+
+    if ((cursor + chunkSize) > static_cast<size_t>(rawBody.length())) {
+      return false;
+    }
+
+    outDecoded.concat(rawBody.c_str() + cursor, chunkSize);
+    cursor += chunkSize;
+
+    if ((cursor + 2) > static_cast<size_t>(rawBody.length()) ||
+        rawBody[cursor] != '\r' ||
+        rawBody[cursor + 1] != '\n') {
+      return false;
+    }
+    cursor += 2;
+  }
+
+  return false;
+}
+
 bool isZeroAddress(const IPAddress& address) {
   if (address.type() == IPv4) {
     return static_cast<uint32_t>(address) == 0;
@@ -250,6 +379,74 @@ bool applyEmergencyDnsOverride() {
 #endif
 }
 
+bool resolveKnownHostFallback(const String& host,
+                             IPAddress& outAddress,
+                             String& outErrorDetail) {
+  if (!host.equalsIgnoreCase("openrouter.ai")) {
+    return false;
+  }
+
+#if CONFIG_LWIP_IPV6
+  // Cloudflare anycast IPv6 observed for openrouter.ai. Used only when DNS fails.
+  static const char* kOpenRouterIpv6Fallbacks[] = {
+      "2606:4700::6812:273",
+      "2606:4700::6812:373",
+  };
+
+  for (size_t i = 0; i < (sizeof(kOpenRouterIpv6Fallbacks) / sizeof(kOpenRouterIpv6Fallbacks[0])); ++i) {
+    IPAddress candidate;
+    if (!candidate.fromString(kOpenRouterIpv6Fallbacks[i])) {
+      continue;
+    }
+    outAddress = candidate;
+    outErrorDetail = String("fallback_openrouter_ipv6:") + kOpenRouterIpv6Fallbacks[i];
+#if AI_HAS_ESP_LOG
+    ESP_LOGW(kTag,
+             "Using literal host fallback host=%s addr=%s",
+             host.c_str(),
+             kOpenRouterIpv6Fallbacks[i]);
+#endif
+    return true;
+  }
+#endif
+
+  // Cloudflare anycast IPv4 observed for openrouter.ai. Used only when DNS fails.
+  static const char* kOpenRouterIpv4Fallbacks[] = {
+      "104.18.3.115",
+      "104.18.2.115",
+  };
+
+  for (size_t i = 0; i < (sizeof(kOpenRouterIpv4Fallbacks) / sizeof(kOpenRouterIpv4Fallbacks[0])); ++i) {
+    IPAddress candidate;
+    if (!candidate.fromString(kOpenRouterIpv4Fallbacks[i])) {
+      continue;
+    }
+    outAddress = candidate;
+    outErrorDetail = String("fallback_openrouter_ipv4:") + kOpenRouterIpv4Fallbacks[i];
+#if AI_HAS_ESP_LOG
+    ESP_LOGW(kTag,
+             "Using literal host fallback host=%s addr=%s",
+             host.c_str(),
+             kOpenRouterIpv4Fallbacks[i]);
+#endif
+    return true;
+  }
+
+  return false;
+}
+
+int readTlsLastError(NetworkClientSecure& client, String& outDetail) {
+  char detail[128] = {0};
+  const int code = client.lastError(detail, sizeof(detail));
+  outDetail = "tls=";
+  outDetail += String(code);
+  if (detail[0] != '\0') {
+    outDetail += ",";
+    outDetail += detail;
+  }
+  return code;
+}
+
 bool resolveHostAddress(const String& host, IPAddress& outAddress, String& outErrorDetail) {
   if (host.length() == 0) {
     outErrorDetail = "empty_host";
@@ -283,6 +480,11 @@ bool resolveHostAddress(const String& host, IPAddress& outAddress, String& outEr
              WiFi.dnsIP(0).toString().c_str(),
              WiFi.dnsIP(1).toString().c_str());
 #endif
+
+    if (resolveKnownHostFallback(host, outAddress, outErrorDetail)) {
+      return true;
+    }
+
     return false;
   }
 
@@ -397,9 +599,11 @@ CustomHttpTransport::CustomHttpTransport(const Config& config)
     : config_(config),
       activeClient_(nullptr),
       state_(AsyncState::Idle),
+      preferPsrAm_(true),
       headersParsed_(false),
-  eventStreamMode_(false),
-  streamDoneEmitted_(false),
+      chunkedTransfer_(false),
+      eventStreamMode_(false),
+      streamDoneEmitted_(false),
       contentLength_(-1),
       bodyReceived_(0),
       startedAtMs_(0),
@@ -444,7 +648,7 @@ AiAsyncSubmitResult CustomHttpTransport::executeAsync(const AiHttpRequest& reque
     return AiAsyncSubmitResult::Failed;
   }
 
-  activeRequest_ = request;
+  preferPsrAm_ = request.preferPsrAm;
   callbacks_ = callbacks;
   activeResponse_ = AiHttpResponse{};
   completedResponse_ = AiHttpResponse{};
@@ -452,6 +656,7 @@ AiAsyncSubmitResult CustomHttpTransport::executeAsync(const AiHttpRequest& reque
 
   headersParsed_ = false;
   headerBuffer_ = "";
+  chunkedTransfer_ = false;
   eventStreamMode_ = false;
   streamDoneEmitted_ = false;
   eventStreamLineBuffer_ = "";
@@ -466,7 +671,7 @@ AiAsyncSubmitResult CustomHttpTransport::executeAsync(const AiHttpRequest& reque
   if (!connectAndSend(request, parts, outErrorMessage)) {
     state_ = AsyncState::Idle;
     activeClient_ = nullptr;
-    activeRequest_ = AiHttpRequest{};
+    preferPsrAm_ = true;
     callbacks_ = AiTransportCallbacks{};
     return AiAsyncSubmitResult::Failed;
   }
@@ -588,6 +793,14 @@ bool CustomHttpTransport::connectAndSend(const AiHttpRequest& request,
     if (config_.insecureTls) {
       secureClient_.setInsecure();
     }
+    const unsigned long handshakeTimeoutSec = timeoutMs_ > 0 ? ((timeoutMs_ + 999UL) / 1000UL) : 45UL;
+    secureClient_.setHandshakeTimeout(handshakeTimeoutSec);
+
+    // Prefer PSRAM allocator before the first TLS attempt to avoid one guaranteed -32512 failure.
+    if (request.preferPsrAm) {
+      ensureMbedTlsAllocatorForPsrAm();
+    }
+
     activeClient_ = &secureClient_;
   } else {
     activeClient_ = &plainClient_;
@@ -614,12 +827,65 @@ bool CustomHttpTransport::connectAndSend(const AiHttpRequest& request,
                                       nullptr,
                                       nullptr)
                 == 1;
+
+    if (!connected) {
+      String tlsDetail;
+      const int tlsError = readTlsLastError(secureClient_, tlsDetail);
+      if (tlsError == -32512 && request.preferPsrAm && ensureMbedTlsAllocatorForPsrAm()) {
+#if AI_HAS_ESP_LOG && AI_HAS_ESP32_HEAP_CAPS
+        ESP_LOGW(kTag,
+           "Retry TLS with PSRAM allocator free8=%u largest8=%u freeInt=%u largestInt=%u freePsram=%u largestPsram=%u",
+                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_8BIT)),
+           static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)),
+           static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+           static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+           static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)),
+           static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)));
+#endif
+        secureClient_.stop();
+        delay(8);
+        connected = secureClient_.connect(resolvedAddress,
+                                          urlParts.port,
+                                          urlParts.host.c_str(),
+                                          nullptr,
+                                          nullptr,
+                                          nullptr)
+                    == 1;
+      }
+
+      if (!connected && tlsError == -32512) {
+        // Give allocator a chance to recover from transient pressure before one last retry.
+#if AI_HAS_ESP_LOG && AI_HAS_ESP32_HEAP_CAPS
+        ESP_LOGW(kTag,
+                 "Last TLS retry after alloc fail freeInt=%u largestInt=%u",
+                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                 static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
+#endif
+        secureClient_.stop();
+        delay(8);
+        connected = secureClient_.connect(resolvedAddress,
+                                          urlParts.port,
+                                          urlParts.host.c_str(),
+                                          nullptr,
+                                          nullptr,
+                                          nullptr)
+                    == 1;
+      }
+
+      if (!connected) {
+        readTlsLastError(secureClient_, outErrorMessage);
+      }
+    }
   } else {
     connected = plainClient_.connect(resolvedAddress, urlParts.port) == 1;
   }
 
   if (!connected) {
-    outErrorMessage = "connect_failed";
+    if (outErrorMessage.length() > 0) {
+      outErrorMessage = String("connect_failed:") + outErrorMessage;
+    } else {
+      outErrorMessage = "connect_failed";
+    }
     activeClient_ = nullptr;
     return false;
   }
@@ -712,6 +978,14 @@ void CustomHttpTransport::parseHeadersIfReady() {
     contentLength_ = contentLengthHeader.toInt();
   }
 
+  const String transferEncodingHeader = readHeaderValueIgnoreCase(headersPart, "Transfer-Encoding");
+  String lowerTransferEncoding = transferEncodingHeader;
+  lowerTransferEncoding.toLowerCase();
+  chunkedTransfer_ = lowerTransferEncoding.indexOf("chunked") >= 0;
+  if (chunkedTransfer_) {
+    contentLength_ = -1;
+  }
+
   const String contentType = readHeaderValueIgnoreCase(headersPart, "Content-Type");
   eventStreamMode_ = contentType.indexOf("text/event-stream") >= 0;
   activeResponse_.streaming = eventStreamMode_;
@@ -734,7 +1008,7 @@ void CustomHttpTransport::handleBodyChunk(const char* data, size_t size) {
     return;
   }
 
-  if (!bodyBuffer_.append(data, size, activeRequest_.preferPsrAm)) {
+  if (!bodyBuffer_.append(data, size, preferPsrAm_)) {
     finishRequest(false, "psram_buffer_allocation_failed");
     return;
   }
@@ -858,9 +1132,22 @@ void CustomHttpTransport::finishRequest(bool ok, const String& errorMessage) {
     }
   }
 
-  activeResponse_.body = bodyBuffer_.toString();
+  String finalBody = bodyBuffer_.toString();
+  String finalError = errorMessage;
+
+  if (chunkedTransfer_ && !eventStreamMode_) {
+    String decodedBody;
+    if (decodeChunkedBody(finalBody, decodedBody)) {
+      finalBody = decodedBody;
+    } else {
+      ok = false;
+      finalError = "chunked_decode_failed";
+    }
+  }
+
+  activeResponse_.body = finalBody;
   activeResponse_.bodyBytes = bodyBuffer_.size();
-  activeResponse_.errorMessage = errorMessage;
+  activeResponse_.errorMessage = finalError;
 
   completedResponse_ = activeResponse_;
   lastResultOk_ = ok;
@@ -871,12 +1158,13 @@ void CustomHttpTransport::finishRequest(bool ok, const String& errorMessage) {
 
   state_ = AsyncState::Idle;
   activeClient_ = nullptr;
-  activeRequest_ = AiHttpRequest{};
+  preferPsrAm_ = true;
   callbacks_ = AiTransportCallbacks{};
   activeResponse_ = AiHttpResponse{};
 
   headerBuffer_ = "";
   headersParsed_ = false;
+  chunkedTransfer_ = false;
   eventStreamMode_ = false;
   streamDoneEmitted_ = false;
   eventStreamLineBuffer_ = "";

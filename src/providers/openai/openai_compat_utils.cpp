@@ -212,12 +212,51 @@ String extractOpenAiContent(ArduinoJson::JsonVariantConst content) {
   return String();
 }
 
-bool parseJsonBody(const String& body, SpiJsonDocument& outDoc, String& outError) {
-  const auto err = deserializeJson(outDoc, body);
+String compactPreview(const String& raw, size_t maxChars) {
+  String preview;
+  if (maxChars == 0) {
+    return preview;
+  }
+
+  preview.reserve(maxChars + 1);
+  for (size_t i = 0; i < raw.length() && preview.length() < maxChars; ++i) {
+    const char ch = raw[i];
+    if (ch == '\r' || ch == '\n' || ch == '\t') {
+      preview += ' ';
+      continue;
+    }
+
+    if (static_cast<unsigned char>(ch) < 0x20U || ch == 0x7f) {
+      preview += '?';
+      continue;
+    }
+
+    preview += ch;
+  }
+
+  return preview;
+}
+
+bool parseJsonBody(const AiHttpResponse& httpResponse, SpiJsonDocument& outDoc, String& outError) {
+  const auto err = deserializeJson(outDoc, httpResponse.body);
   if (!err) {
     return true;
   }
+
   outError = String("JSON parse failed: ") + err.c_str();
+  outError += String(" status=") + String(httpResponse.statusCode);
+  outError += String(" body_len=") + String(httpResponse.body.length());
+  outError += String(" body_bytes=") + String(httpResponse.bodyBytes);
+
+  if (httpResponse.errorMessage.length() > 0) {
+    outError += String(" transport=") + httpResponse.errorMessage;
+  }
+
+  const String preview = compactPreview(httpResponse.body, 180);
+  if (preview.length() > 0) {
+    outError += String(" preview=") + preview;
+  }
+
   return false;
 }
 
@@ -268,7 +307,7 @@ bool parseOpenAiStyleResponse(const AiHttpResponse& httpResponse,
 
   SpiJsonDocument doc;
   String parseError;
-  if (!parseJsonBody(httpResponse.body, doc, parseError)) {
+  if (!parseJsonBody(httpResponse, doc, parseError)) {
     outResponse.ok = false;
     outResponse.errorCode = "invalid_json";
     outResponse.errorMessage = parseError;

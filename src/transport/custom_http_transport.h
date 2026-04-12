@@ -88,12 +88,13 @@ class CustomHttpTransport : public IAiTransport {
   Client* activeClient_;
 
   AsyncState state_;
-  AiHttpRequest activeRequest_;
+  bool preferPsrAm_;
   AiHttpResponse activeResponse_;
   AiTransportCallbacks callbacks_;
 
   String headerBuffer_;
   bool headersParsed_;
+  bool chunkedTransfer_;
   bool eventStreamMode_;
   bool streamDoneEmitted_;
   String eventStreamLineBuffer_;
