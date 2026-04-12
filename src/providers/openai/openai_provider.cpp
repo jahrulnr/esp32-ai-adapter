@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <SpiJsonDocument.h>
 
+#include "core/ai_http_request_body_utils.h"
 #include "core/url_utils.h"
 #include "providers/openai/openai_compat_utils.h"
 
@@ -40,6 +41,7 @@ bool OpenAiProvider::buildHttpRequest(const AiInvokeRequest& request,
     body["max_completion_tokens"] = request.maxTokens;
   }
 
+  outHttpRequest = AiHttpRequest{};
   outHttpRequest.method = "POST";
   outHttpRequest.url = joinUrl(request.baseUrl.length() > 0 ? request.baseUrl : String(kDefaultBaseUrl), kChatPath);
   outHttpRequest.addHeader("Content-Type", "application/json");
@@ -49,7 +51,13 @@ bool OpenAiProvider::buildHttpRequest(const AiInvokeRequest& request,
     outHttpRequest.addHeader("X-Client-Request-Id", request.requestId);
   }
 
-  serializeJson(body, outHttpRequest.body);
+  if (!applyJsonBodyToHttpRequest(body, request.bodySpool, outHttpRequest, outErrorMessage)) {
+    if (outErrorMessage.length() == 0) {
+      outErrorMessage = "request_body_build_failed";
+    }
+    return false;
+  }
+
   return true;
 }
 

@@ -897,6 +897,44 @@ bool CustomHttpTransport::connectAndSend(const AiHttpRequest& request,
   activeClient_->print(urlParts.host);
   activeClient_->print("\r\nConnection: close\r\n");
 
+  const bool hasInlineBody = request.body.length() > 0;
+  const bool hasFileBody = request.bodyFs != nullptr && request.bodyFilePath.length() > 0;
+
+  if (hasInlineBody && hasFileBody) {
+    outErrorMessage = "request_body_conflict";
+    if (activeClient_ != nullptr) {
+      activeClient_->stop();
+    }
+    activeClient_ = nullptr;
+    return false;
+  }
+
+  size_t fileBodyBytes = 0;
+  File fileBody;
+  if (hasFileBody) {
+    fileBody = request.bodyFs->open(request.bodyFilePath, FILE_READ);
+    if (!fileBody) {
+      outErrorMessage = "request_body_file_open_failed";
+      if (activeClient_ != nullptr) {
+        activeClient_->stop();
+      }
+      activeClient_ = nullptr;
+      return false;
+    }
+
+    if (fileBody.isDirectory()) {
+      fileBody.close();
+      outErrorMessage = "request_body_file_is_directory";
+      if (activeClient_ != nullptr) {
+        activeClient_->stop();
+      }
+      activeClient_ = nullptr;
+      return false;
+    }
+
+    fileBodyBytes = static_cast<size_t>(fileBody.size());
+  }
+
   for (size_t i = 0; i < request.headerCount; ++i) {
     activeClient_->print(request.headers[i].key);
     activeClient_->print(": ");
@@ -904,16 +942,79 @@ bool CustomHttpTransport::connectAndSend(const AiHttpRequest& request,
     activeClient_->print("\r\n");
   }
 
-  if (request.body.length() > 0) {
+  if (hasInlineBody || hasFileBody) {
+    const size_t contentLength = hasInlineBody ? request.body.length() : fileBodyBytes;
     activeClient_->print("Content-Length: ");
-    activeClient_->print(static_cast<unsigned>(request.body.length()));
+    activeClient_->print(static_cast<unsigned>(contentLength));
     activeClient_->print("\r\n");
   }
 
   activeClient_->print("\r\n");
 
-  if (request.body.length() > 0) {
+  if (hasInlineBody) {
     activeClient_->print(request.body);
+    return true;
+  }
+
+  if (!hasFileBody) {
+    return true;
+  }
+
+  size_t chunkBytes = request.bodyStreamChunkBytes;
+  if (chunkBytes < 256) {
+    chunkBytes = 256;
+  }
+  if (chunkBytes > 4096) {
+    chunkBytes = 4096;
+  }
+
+  uint8_t* buffer = static_cast<uint8_t*>(std::malloc(chunkBytes));
+  if (buffer == nullptr) {
+    fileBody.close();
+    outErrorMessage = "request_body_stream_buffer_alloc_failed";
+    if (activeClient_ != nullptr) {
+      activeClient_->stop();
+    }
+    activeClient_ = nullptr;
+    return false;
+  }
+
+  bool writeOk = true;
+  while (fileBody.available()) {
+    const size_t readLen = fileBody.read(buffer, chunkBytes);
+    if (readLen == 0) {
+      break;
+    }
+
+    size_t offset = 0;
+    while (offset < readLen) {
+      const size_t written = activeClient_->write(buffer + offset, readLen - offset);
+      if (written == 0) {
+        writeOk = false;
+        break;
+      }
+      offset += written;
+    }
+
+    if (!writeOk) {
+      break;
+    }
+  }
+
+  std::free(buffer);
+  fileBody.close();
+
+  if (!writeOk) {
+    outErrorMessage = "request_body_stream_write_failed";
+    if (activeClient_ != nullptr) {
+      activeClient_->stop();
+    }
+    activeClient_ = nullptr;
+    return false;
+  }
+
+  if (request.removeBodyFileAfterSend) {
+    request.bodyFs->remove(request.bodyFilePath);
   }
 
   return true;

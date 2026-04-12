@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <SpiJsonDocument.h>
 
+#include "core/ai_http_request_body_utils.h"
 #include "core/url_utils.h"
 #include "providers/openai/openai_compat_utils.h"
 
@@ -30,6 +31,7 @@ bool LlamaCppProvider::buildHttpRequest(const AiInvokeRequest& request,
     return false;
   }
 
+  outHttpRequest = AiHttpRequest{};
   outHttpRequest.method = "POST";
   outHttpRequest.url =
       joinUrl(request.baseUrl.length() > 0 ? request.baseUrl : String(kDefaultBaseUrl), kChatPath);
@@ -39,7 +41,13 @@ bool LlamaCppProvider::buildHttpRequest(const AiInvokeRequest& request,
     outHttpRequest.addHeader("Authorization", String("Bearer ") + request.apiKey);
   }
 
-  serializeJson(body, outHttpRequest.body);
+  if (!applyJsonBodyToHttpRequest(body, request.bodySpool, outHttpRequest, outErrorMessage)) {
+    if (outErrorMessage.length() == 0) {
+      outErrorMessage = "request_body_build_failed";
+    }
+    return false;
+  }
+
   return true;
 }
 

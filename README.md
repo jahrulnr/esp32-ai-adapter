@@ -198,6 +198,11 @@ audioClient.synthesize(ProviderKind::OpenAI, tts, ttsOut);
 
 - `transport/custom_http_transport.*` provides sync + nonblocking HTTP execution.
 - Response body buffering prefers PSRAM on ESP32 (`heap_caps_malloc(..., MALLOC_CAP_SPIRAM)` fallback to normal heap).
+- Request payload can be sourced from FS file to reduce RAM pressure:
+	- `AiHttpRequest::bodyFs` + `AiHttpRequest::bodyFilePath`
+	- transport sets `Content-Length` from file size and writes file content to socket in small chunks
+	- `AiHttpRequest::removeBodyFileAfterSend=true` can auto-delete temporary spool file
+	- if both `body` and `bodyFs/bodyFilePath` are set, request is rejected (`request_body_conflict`)
 - Async flow uses callbacks:
 	- `AiTransportCallbacks::onChunk` for partial chunks
 	- `AiTransportCallbacks::onDone` when response is complete
@@ -205,6 +210,55 @@ audioClient.synthesize(ProviderKind::OpenAI, tts, ttsOut);
 	- OpenAI/OpenRouter/llama.cpp style `choices[0].delta.content`
 	- Claude style `content_block_delta.delta.text`
 	- Ollama JSON-line style `message.content` in stream payloads
+
+### Spool to FS then upload
+
+Use this pattern when payload is large and you want deterministic memory usage.
+
+```cpp
+File tmp = LittleFS.open("/tmp_req.json", FILE_WRITE);
+tmp.print("{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}");
+tmp.close();
+
+AiHttpRequest request;
+request.method = "POST";
+request.url = "https://api.openai.com/v1/chat/completions";
+request.addHeader("Content-Type", "application/json");
+request.addHeader("Authorization", String("Bearer ") + apiKey);
+request.bodyFs = &LittleFS;
+request.bodyFilePath = "/tmp_req.json";
+request.bodyStreamChunkBytes = 1024;
+request.removeBodyFileAfterSend = true;
+
+AiHttpResponse response;
+transport.execute(request, response);
+```
+
+### Auto-spool from provider request
+
+Provider builders (`AiInvokeRequest`, `AiSpeechToTextRequest`, `AiTextToSpeechRequest`) now support automatic FS spool via `bodySpool`.
+
+```cpp
+AiInvokeRequest req;
+req.baseUrl = "https://api.openai.com/v1";
+req.apiKey = "YOUR_KEY";
+req.model = "gpt-4o-mini";
+req.prompt = "Generate a long structured JSON output";
+
+req.bodySpool.filesystem = &LittleFS;
+req.bodySpool.filePath = "/tmp/invoke_req.json";
+req.bodySpool.thresholdBytes = 16 * 1024;  // spool only when payload is large
+req.bodySpool.streamChunkBytes = 1024;
+req.bodySpool.removeAfterSend = true;
+
+AiInvokeResponse out;
+client.invoke(ProviderKind::OpenAI, req, out);
+```
+
+`bodySpool` behavior:
+- if `forceSpool=true`, request must have valid `filesystem` and `filePath`
+- if payload size >= `thresholdBytes`, JSON body is written to file and sent from FS with `Content-Length`
+- if below threshold (and not forced), body stays in-memory as before
 
 ## Minimal Async Example
 

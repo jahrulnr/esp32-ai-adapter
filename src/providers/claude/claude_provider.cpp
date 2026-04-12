@@ -5,6 +5,7 @@
 
 #include <cstring>
 
+#include "core/ai_http_request_body_utils.h"
 #include "core/url_utils.h"
 
 namespace ai::provider {
@@ -189,6 +190,7 @@ bool ClaudeProvider::buildHttpRequest(const AiInvokeRequest& request,
   writeClaudeMessages(request, messages);
   writeClaudeTools(request, body);
 
+  outHttpRequest = AiHttpRequest{};
   outHttpRequest.method = "POST";
   outHttpRequest.url =
       joinUrl(request.baseUrl.length() > 0 ? request.baseUrl : String(kDefaultBaseUrl),
@@ -197,7 +199,13 @@ bool ClaudeProvider::buildHttpRequest(const AiInvokeRequest& request,
   outHttpRequest.addHeader("x-api-key", request.apiKey);
   outHttpRequest.addHeader("anthropic-version", kAnthropicVersion);
 
-  serializeJson(body, outHttpRequest.body);
+  if (!applyJsonBodyToHttpRequest(body, request.bodySpool, outHttpRequest, outErrorMessage)) {
+    if (outErrorMessage.length() == 0) {
+      outErrorMessage = "request_body_build_failed";
+    }
+    return false;
+  }
+
   return true;
 }
 

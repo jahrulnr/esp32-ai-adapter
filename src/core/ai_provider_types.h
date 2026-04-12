@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <FS.h>
 
 #include <array>
 
@@ -131,6 +132,15 @@ struct AiToolCall {
   String argumentsJson;
 };
 
+struct AiRequestBodySpoolOptions {
+  fs::FS* filesystem = nullptr;
+  String filePath;
+  bool forceSpool = false;
+  bool removeAfterSend = false;
+  size_t streamChunkBytes = 1024;
+  size_t thresholdBytes = 32 * 1024;
+};
+
 constexpr size_t kAiMaxMessages = 16;
 constexpr size_t kAiMaxTools = 8;
 constexpr size_t kAiMaxToolCalls = 8;
@@ -146,6 +156,7 @@ struct AiSpeechToTextRequest {
   String language;
   String prompt;
   String responseFormat;
+  AiRequestBodySpoolOptions bodySpool;
   bool stream = false;
   bool preferPsrAm = true;
   uint32_t timeoutMs = 45000;
@@ -177,6 +188,7 @@ struct AiTextToSpeechRequest {
   String outputFormat;
   String language;
   String instructions;
+  AiRequestBodySpoolOptions bodySpool;
   bool stream = false;
   bool preferPsrAm = true;
   uint32_t timeoutMs = 45000;
@@ -204,6 +216,7 @@ struct AiInvokeRequest {
   String requestId;
   String httpReferer;
   String appTitle;
+  AiRequestBodySpoolOptions bodySpool;
   bool stream = false;
   uint16_t maxTokens = 512;
   float temperature = 0.7f;
@@ -283,6 +296,10 @@ struct AiHttpRequest {
   String method = "POST";
   String url;
   String body;
+  fs::FS* bodyFs = nullptr;
+  String bodyFilePath;
+  bool removeBodyFileAfterSend = false;
+  size_t bodyStreamChunkBytes = 1024;
   uint32_t timeoutMs = 45000;
   bool nonBlockingPreferred = false;
   bool preferPsrAm = true;
