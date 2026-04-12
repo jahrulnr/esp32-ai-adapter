@@ -244,7 +244,7 @@ bool AiSessionClient::sendAudioBytesSmart(const String& sessionId,
 
   String spillPath = options.spillFilePath;
   if (spillPath.length() == 0) {
-    spillPath = "/aipk_audio_spill.bin";
+    spillPath = "/cache/aipk_audio_spill.bin";
   }
 
   File writeFile = options.spillFs->open(spillPath, FILE_WRITE);

@@ -31,7 +31,7 @@ struct AiAudioChunkingOptions {
   size_t safetyHeadroomBytes = 24 * 1024;
 
   fs::FS* spillFs = nullptr;
-  String spillFilePath = "/aipk_audio_spill.bin";
+  String spillFilePath = "/cache/aipk_audio_spill.bin";
   bool removeSpillFileAfterSend = true;
 };
 
