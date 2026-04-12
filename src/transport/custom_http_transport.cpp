@@ -7,6 +7,20 @@
 #include <lwip/netdb.h>
 #include <lwip/sockets.h>
 
+#if defined(ESP32) && __has_include(<WiFi.h>)
+#include <WiFi.h>
+#define AI_HAS_ESP32_WIFI 1
+#else
+#define AI_HAS_ESP32_WIFI 0
+#endif
+
+#if defined(ESP32) && __has_include(<esp_log.h>)
+#include <esp_log.h>
+#define AI_HAS_ESP_LOG 1
+#else
+#define AI_HAS_ESP_LOG 0
+#endif
+
 #if defined(ESP32) && __has_include(<esp_heap_caps.h>)
 #include <esp_heap_caps.h>
 #define AI_HAS_ESP32_HEAP_CAPS 1
@@ -17,6 +31,10 @@
 namespace ai::provider {
 
 namespace {
+
+#if AI_HAS_ESP_LOG
+constexpr const char* kTag = "AI_HTTP_TX";
+#endif
 
 void* allocBytes(size_t size, bool preferPsrAm) {
   if (size == 0) {
@@ -185,40 +203,135 @@ String extractOllamaDelta(SpiJsonDocument& doc, bool& outDone, String& outDoneRe
   return String();
 }
 
-bool resolveHostIpv4(const String& host, IPAddress& outAddress) {
+bool isZeroAddress(const IPAddress& address) {
+  if (address.type() == IPv4) {
+    return static_cast<uint32_t>(address) == 0;
+  }
+
+  for (size_t i = 0; i < 16; ++i) {
+    if (address[i] != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool applyEmergencyDnsOverride() {
+#if AI_HAS_ESP32_WIFI
+  const IPAddress currentPrimary = WiFi.dnsIP(0);
+  const IPAddress currentSecondary = WiFi.dnsIP(1);
+
+  if (!isZeroAddress(currentPrimary) || !isZeroAddress(currentSecondary)) {
+    return false;
+  }
+
+  IPAddress emergencyPrimary;
+  IPAddress emergencySecondary;
+  if (!emergencyPrimary.fromString("1.1.1.1") || !emergencySecondary.fromString("8.8.8.8")) {
+    return false;
+  }
+
+  if (!WiFi.setDNS(emergencyPrimary, emergencySecondary)) {
+#if AI_HAS_ESP_LOG
+    ESP_LOGW(kTag, "Emergency DNS override failed");
+#endif
+    return false;
+  }
+
+#if AI_HAS_ESP_LOG
+  ESP_LOGW(kTag,
+           "Emergency DNS override applied active=%s,%s",
+           WiFi.dnsIP(0).toString().c_str(),
+           WiFi.dnsIP(1).toString().c_str());
+#endif
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool resolveHostAddress(const String& host, IPAddress& outAddress, String& outErrorDetail) {
   if (host.length() == 0) {
+    outErrorDetail = "empty_host";
     return false;
   }
 
   if (outAddress.fromString(host)) {
+    outErrorDetail = "literal_ip";
     return true;
   }
 
   struct addrinfo hints;
   std::memset(&hints, 0, sizeof(hints));
-  hints.ai_family = AF_INET;
+  hints.ai_family = AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
 
   struct addrinfo* result = nullptr;
-  const int rc = lwip_getaddrinfo(host.c_str(), "0", &hints, &result);
+  int rc = lwip_getaddrinfo(host.c_str(), "0", &hints, &result);
+  if ((rc != 0 || result == nullptr) && applyEmergencyDnsOverride()) {
+    result = nullptr;
+    rc = lwip_getaddrinfo(host.c_str(), "0", &hints, &result);
+  }
+
   if (rc != 0 || result == nullptr) {
+    outErrorDetail = String("dns_rc=") + String(rc);
+#if AI_HAS_ESP32_WIFI && AI_HAS_ESP_LOG
+    ESP_LOGW(kTag,
+             "Resolve failed host=%s detail=%s dns=%s,%s",
+             host.c_str(),
+             outErrorDetail.c_str(),
+             WiFi.dnsIP(0).toString().c_str(),
+             WiFi.dnsIP(1).toString().c_str());
+#endif
     return false;
   }
 
-  bool resolved = false;
+  bool hasIpv4 = false;
+  bool hasIpv6 = false;
+  IPAddress firstIpv4;
+  IPAddress firstIpv6;
+
   for (struct addrinfo* current = result; current != nullptr; current = current->ai_next) {
-    if (current->ai_family != AF_INET || current->ai_addr == nullptr) {
+    if (current->ai_addr == nullptr) {
       continue;
     }
 
-    const auto* ipv4 = reinterpret_cast<const struct sockaddr_in*>(current->ai_addr);
-    outAddress = IPAddress(ipv4->sin_addr.s_addr);
-    resolved = true;
-    break;
+    if (current->ai_family == AF_INET) {
+      const auto* ipv4 = reinterpret_cast<const struct sockaddr_in*>(current->ai_addr);
+      firstIpv4 = IPAddress(ipv4->sin_addr.s_addr);
+      hasIpv4 = true;
+      continue;
+    }
+
+#if CONFIG_LWIP_IPV6
+    if (current->ai_family == AF_INET6) {
+      const auto* ipv6 = reinterpret_cast<const struct sockaddr_in6*>(current->ai_addr);
+      firstIpv6 = IPAddress(IPv6,
+                            ipv6->sin6_addr.un.u8_addr,
+                            static_cast<uint8_t>(ipv6->sin6_scope_id & 0xFF));
+      hasIpv6 = true;
+    }
+#endif
   }
 
   lwip_freeaddrinfo(result);
-  return resolved;
+
+#if CONFIG_LWIP_IPV6
+  if (hasIpv6) {
+    outAddress = firstIpv6;
+    outErrorDetail = "resolved_ipv6";
+    return true;
+  }
+#endif
+
+  if (hasIpv4) {
+    outAddress = firstIpv4;
+    outErrorDetail = "resolved_ipv4";
+    return true;
+  }
+
+  outErrorDetail = "no_supported_addr";
+  return false;
 }
 
 }  // namespace
@@ -481,8 +594,13 @@ bool CustomHttpTransport::connectAndSend(const AiHttpRequest& request,
   }
 
   IPAddress resolvedAddress;
-  if (!resolveHostIpv4(urlParts.host, resolvedAddress)) {
+  String resolveDetail;
+  if (!resolveHostAddress(urlParts.host, resolvedAddress, resolveDetail)) {
     outErrorMessage = "resolve_failed";
+    if (resolveDetail.length() > 0) {
+      outErrorMessage += ":";
+      outErrorMessage += resolveDetail;
+    }
     activeClient_ = nullptr;
     return false;
   }
