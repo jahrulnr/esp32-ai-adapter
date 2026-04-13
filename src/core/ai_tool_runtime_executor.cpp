@@ -1,5 +1,6 @@
 #include "core/ai_tool_runtime_executor.h"
 
+#include <SpiJsonDocument.h>
 #include <esp_heap_caps.h>
 #include <new>
 
@@ -26,6 +27,169 @@ void releaseInvokeRequest(AiInvokeRequest* request) {
 
   request->~AiInvokeRequest();
   heap_caps_free(request);
+}
+
+int findJsonStartIndex(const String& text, size_t from) {
+  const int objectIndex = text.indexOf('{', from);
+  const int arrayIndex = text.indexOf('[', from);
+  if (objectIndex < 0) {
+    return arrayIndex;
+  }
+  if (arrayIndex < 0) {
+    return objectIndex;
+  }
+  return objectIndex < arrayIndex ? objectIndex : arrayIndex;
+}
+
+int findMatchingJsonEnd(const String& text, size_t start) {
+  if (start >= text.length()) {
+    return -1;
+  }
+
+  const char opener = text[start];
+  const char closer = opener == '[' ? ']' : (opener == '{' ? '}' : '\0');
+  if (closer == '\0') {
+    return -1;
+  }
+
+  int depth = 0;
+  bool inString = false;
+  bool escaped = false;
+  for (size_t i = start; i < text.length(); ++i) {
+    const char c = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (c == '\\') {
+        escaped = true;
+        continue;
+      }
+      if (c == '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (c == '"') {
+      inString = true;
+      continue;
+    }
+
+    if (c == opener) {
+      ++depth;
+      continue;
+    }
+
+    if (c == closer) {
+      --depth;
+      if (depth == 0) {
+        return static_cast<int>(i);
+      }
+    }
+  }
+
+  return -1;
+}
+
+bool parseLooseToolCallItem(ArduinoJson::JsonObjectConst item,
+                            size_t index,
+                            AiInvokeResponse& outResponse) {
+  if (item.isNull()) {
+    return false;
+  }
+
+  const char* name = item["name"] | nullptr;
+  if ((name == nullptr || name[0] == '\0') && item["tool"].is<const char*>()) {
+    name = item["tool"].as<const char*>();
+  }
+  if (name == nullptr || name[0] == '\0') {
+    return false;
+  }
+
+  AiToolCall call;
+  call.id = item["id"].is<const char*>() ? item["id"].as<const char*>() : String();
+  if (call.id.length() == 0) {
+    call.id = String("fallback_tool_") + String(static_cast<unsigned>(index + 1));
+  }
+  call.type = "function";
+  call.name = name;
+
+  ArduinoJson::JsonVariantConst argsVar = item["arguments"];
+  if (argsVar.isNull()) {
+    argsVar = item["args"];
+  }
+  if (argsVar.isNull()) {
+    call.argumentsJson = "{}";
+  } else if (argsVar.is<const char*>()) {
+    call.argumentsJson = argsVar.as<const char*>();
+    if (call.argumentsJson.length() == 0) {
+      call.argumentsJson = "{}";
+    }
+  } else {
+    String argsJson;
+    serializeJson(argsVar, argsJson);
+    call.argumentsJson = argsJson.length() == 0 ? "{}" : argsJson;
+  }
+
+  return outResponse.addToolCall(call);
+}
+
+bool appendToolCallsFromLooseJson(const String& jsonPayload, AiInvokeResponse& outResponse) {
+  if (jsonPayload.length() == 0) {
+    return false;
+  }
+
+  SpiJsonDocument doc;
+  if (deserializeJson(doc, jsonPayload) != DeserializationError::Ok) {
+    return false;
+  }
+
+  size_t added = 0;
+  if (doc.is<ArduinoJson::JsonObjectConst>()) {
+    if (parseLooseToolCallItem(doc.as<ArduinoJson::JsonObjectConst>(), added, outResponse)) {
+      ++added;
+    }
+  } else if (doc.is<ArduinoJson::JsonArrayConst>()) {
+    for (ArduinoJson::JsonVariantConst entry : doc.as<ArduinoJson::JsonArrayConst>()) {
+      if (!entry.is<ArduinoJson::JsonObjectConst>()) {
+        continue;
+      }
+      if (parseLooseToolCallItem(entry.as<ArduinoJson::JsonObjectConst>(), added, outResponse)) {
+        ++added;
+      }
+    }
+  } else {
+    return false;
+  }
+
+  return added > 0;
+}
+
+bool tryAppendToolCallsFromText(const String& text, AiInvokeResponse& outResponse) {
+  if (text.length() == 0) {
+    return false;
+  }
+
+  const int markerIndex = text.indexOf("TOOLCALL");
+  if (markerIndex < 0) {
+    return false;
+  }
+
+  int payloadStart = findJsonStartIndex(text, static_cast<size_t>(markerIndex));
+  if (payloadStart < 0) {
+    return false;
+  }
+
+  int payloadEnd = findMatchingJsonEnd(text, static_cast<size_t>(payloadStart));
+  if (payloadEnd < payloadStart) {
+    return false;
+  }
+
+  const String payload = text.substring(static_cast<size_t>(payloadStart),
+                                        static_cast<size_t>(payloadEnd + 1));
+  return appendToolCallsFromLooseJson(payload, outResponse);
 }
 
 }  // namespace
@@ -62,6 +226,11 @@ bool AiToolRuntimeExecutor::invokeHttpWithTools(
   for (size_t round = 0; round < maxRounds; ++round) {
     AiInvokeResponse response;
     const bool ok = client.invoke(provider, working, response);
+
+    if (ok && working.enableToolCalls && response.toolCallCount == 0) {
+      (void)tryAppendToolCallsFromText(response.text, response);
+    }
+
     outResponse = response;
 
     if (response.toolCallCount == 0) {
