@@ -95,6 +95,8 @@ struct AiProviderKitLlmRequest {
   uint32_t timeoutMs = 45000U;
   float temperature = 0.7f;
   bool continueOnToolError = false;
+  String bootstrapToolQuery;
+  String preferredToolChoice;
   uint8_t emptyResponseRetries = 0;
   uint32_t emptyResponseRetryDelayMs = 0;
   fs::FS* spoolFilesystem = nullptr;

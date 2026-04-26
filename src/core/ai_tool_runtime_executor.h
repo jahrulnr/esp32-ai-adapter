@@ -12,6 +12,8 @@ namespace ai::provider {
 
 struct AiToolHttpLoopOptions {
   bool continueOnToolError = false;
+  String bootstrapDiscoveryQuery;
+  uint8_t bootstrapDiscoveryLimit = 5;
 };
 
 class AiToolRuntimeExecutor {

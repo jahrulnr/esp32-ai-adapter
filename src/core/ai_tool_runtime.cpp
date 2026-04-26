@@ -397,6 +397,10 @@ size_t AiToolRuntimeRegistry::size() const {
   return count;
 }
 
+bool AiToolRuntimeRegistry::hasTool(const String& toolName) const {
+  return findByName(toolName) != nullptr;
+}
+
 String AiToolRuntimeRegistry::requiredToolsJsonFor(const String& toolName) const {
   const Entry* entry = findByName(toolName);
   if (entry == nullptr) {

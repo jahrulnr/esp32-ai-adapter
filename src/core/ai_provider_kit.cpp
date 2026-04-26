@@ -802,6 +802,10 @@ void AiProviderKit::processQueuedLlm(QueuedJob& job) {
 
   AiToolHttpLoopOptions options;
   options.continueOnToolError = request->continueOnToolError;
+  options.bootstrapDiscoveryQuery = request->bootstrapToolQuery;
+  if (request->preferredToolChoice.length() > 0) {
+    defaults_.toolChoice = request->preferredToolChoice;
+  }
 
   String invokeError;
   for (uint8_t attempt = 0; attempt <= request->emptyResponseRetries; ++attempt) {

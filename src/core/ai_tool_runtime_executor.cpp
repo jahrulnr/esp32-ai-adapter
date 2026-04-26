@@ -167,6 +167,33 @@ bool appendToolCallsFromLooseJson(const String& jsonPayload, AiInvokeResponse& o
   return added > 0;
 }
 
+bool appendFinderCallFromBareQueryJson(const String& jsonPayload, AiInvokeResponse& outResponse) {
+  SpiJsonDocument doc;
+  if (deserializeJson(doc, jsonPayload) != DeserializationError::Ok) {
+    return false;
+  }
+  if (!doc.is<ArduinoJson::JsonObjectConst>()) {
+    return false;
+  }
+
+  ArduinoJson::JsonObjectConst obj = doc.as<ArduinoJson::JsonObjectConst>();
+  if (obj["name"].is<const char*>() || obj["tool"].is<const char*>()) {
+    return parseLooseToolCallItem(obj, outResponse.toolCallCount, outResponse);
+  }
+
+  const char* query = obj["query"].is<const char*>() ? obj["query"].as<const char*>() : nullptr;
+  if (query == nullptr || query[0] == '\0') {
+    return false;
+  }
+
+  AiToolCall call;
+  call.id = String("fallback_tool_") + String(static_cast<unsigned>(outResponse.toolCallCount + 1));
+  call.type = "function";
+  call.name = "tools.find";
+  call.argumentsJson = jsonPayload;
+  return outResponse.addToolCall(call);
+}
+
 bool tryAppendToolCallsFromText(const String& text, AiInvokeResponse& outResponse) {
   if (text.length() == 0) {
     return false;
@@ -174,7 +201,12 @@ bool tryAppendToolCallsFromText(const String& text, AiInvokeResponse& outRespons
 
   const int markerIndex = text.indexOf("TOOLCALL");
   if (markerIndex < 0) {
-    return false;
+    String trimmed = text;
+    trimmed.trim();
+    if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+      return false;
+    }
+    return appendFinderCallFromBareQueryJson(trimmed, outResponse);
   }
 
   int payloadStart = findJsonStartIndex(text, static_cast<size_t>(markerIndex));
@@ -227,6 +259,15 @@ bool AiToolRuntimeExecutor::invokeHttpWithTools(
   if (working.enableToolCalls && working.toolCount == 0 && registry_.size() > 0) {
     if (!registry_.appendToolDefinitionsToRequest(
             working, outErrorMessage, AiToolRuntimeRegistry::AppendMode::InitialOnly)) {
+      releaseInvokeRequest(workingPtr);
+      return false;
+    }
+  }
+  if (working.enableToolCalls && options.bootstrapDiscoveryQuery.length() > 0) {
+    if (!registry_.appendDiscoveredToolDefinitionsToRequest(options.bootstrapDiscoveryQuery,
+                                                            options.bootstrapDiscoveryLimit,
+                                                            working,
+                                                            outErrorMessage)) {
       releaseInvokeRequest(workingPtr);
       return false;
     }
