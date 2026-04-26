@@ -14,13 +14,25 @@ using AiToolOnCallCallback =
 
 class AiToolRuntimeRegistry {
  public:
+  enum class ToolExposure : uint8_t {
+    Initial = 0,
+    Discoverable,
+  };
+
+  enum class AppendMode : uint8_t {
+    All = 0,
+    InitialOnly,
+    DiscoverableOnly,
+  };
+
   bool setMax(size_t maxEntries);
   size_t max() const;
 
   bool registerTool(const AiToolDefinition& definition,
                     AiToolOnCallCallback onCall,
                     void* userContext,
-                    String& outErrorMessage);
+                    String& outErrorMessage,
+                    ToolExposure exposure = ToolExposure::Initial);
 
   bool unregisterTool(const String& toolName);
 
@@ -29,7 +41,13 @@ class AiToolRuntimeRegistry {
               String& outErrorMessage) const;
 
   bool appendToolDefinitionsToRequest(AiInvokeRequest& request,
-                                      String& outErrorMessage) const;
+                                      String& outErrorMessage,
+                                      AppendMode mode = AppendMode::All) const;
+
+  bool appendDiscoveredToolDefinitionsToRequest(const String& query,
+                                                size_t maxResults,
+                                                AiInvokeRequest& request,
+                                                String& outErrorMessage) const;
 
   size_t size() const;
 
@@ -39,6 +57,7 @@ class AiToolRuntimeRegistry {
     AiToolDefinition definition;
     AiToolOnCallCallback onCall = nullptr;
     void* userContext = nullptr;
+    ToolExposure exposure = ToolExposure::Initial;
   };
 
   static constexpr size_t kMaxEntries = kAiMaxTools;

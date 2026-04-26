@@ -192,6 +192,16 @@ bool tryAppendToolCallsFromText(const String& text, AiInvokeResponse& outRespons
   return appendToolCallsFromLooseJson(payload, outResponse);
 }
 
+String extractQueryFromToolCall(const String& argumentsJson) {
+  SpiJsonDocument doc;
+  if (deserializeJson(doc, argumentsJson) != DeserializationError::Ok) {
+    return "";
+  }
+  String query = doc["query"].is<const char*>() ? doc["query"].as<const char*>() : "";
+  query.trim();
+  return query;
+}
+
 }  // namespace
 
 AiToolRuntimeExecutor::AiToolRuntimeExecutor(const AiToolRuntimeRegistry& registry)
@@ -215,15 +225,14 @@ bool AiToolRuntimeExecutor::invokeHttpWithTools(
 
   AiInvokeRequest& working = *workingPtr;
   if (working.enableToolCalls && working.toolCount == 0 && registry_.size() > 0) {
-    if (!registry_.appendToolDefinitionsToRequest(working, outErrorMessage)) {
+    if (!registry_.appendToolDefinitionsToRequest(
+            working, outErrorMessage, AiToolRuntimeRegistry::AppendMode::InitialOnly)) {
       releaseInvokeRequest(workingPtr);
       return false;
     }
   }
 
-  const size_t maxRounds = options.maxRounds == 0 ? 1 : options.maxRounds;
-
-  for (size_t round = 0; round < maxRounds; ++round) {
+  for (size_t round = 0; round < AIPROVIDERKIT_TOOL_LOOP_MAX_ROUNDS; ++round) {
     AiInvokeResponse response;
     const bool ok = client.invoke(provider, working, response);
 
@@ -263,12 +272,17 @@ bool AiToolRuntimeExecutor::invokeHttpWithTools(
         toolResult = toJsonErrorObject(toolError.length() > 0 ? toolError : String("onCall failed"));
       }
 
-      AiChatMessage toolMessage;
-      toolMessage.role = AiMessageRole::Tool;
-      toolMessage.content = toolResult;
-      toolMessage.toolCallId = call.id;
-      toolMessage.toolName = call.name;
-      if (!working.addMessage(toolMessage)) {
+      if (call.name.equalsIgnoreCase("tools.find")) {
+        String appendError;
+        const String query = extractQueryFromToolCall(call.argumentsJson);
+        if (!registry_.appendDiscoveredToolDefinitionsToRequest(query, 5, working, appendError)) {
+          outErrorMessage = appendError.length() > 0 ? appendError : String("tool_discovery_append_failed");
+          releaseInvokeRequest(workingPtr);
+          return false;
+        }
+      }
+
+      if (!working.addMessage(AiMessageRole::Tool, toolResult, call.id, call.name)) {
         outErrorMessage = "Unable to append tool message to request";
         releaseInvokeRequest(workingPtr);
         return false;
@@ -328,20 +342,14 @@ bool AiToolRuntimeExecutor::ensureSeedMessages(AiInvokeRequest& request, String&
   }
 
   if (request.systemPrompt.length() > 0) {
-    AiChatMessage system;
-    system.role = AiMessageRole::System;
-    system.content = request.systemPrompt;
-    if (!request.addMessage(system)) {
+    if (!request.addMessage(AiMessageRole::System, request.systemPrompt)) {
       outErrorMessage = "Unable to append system prompt message";
       return false;
     }
   }
 
   if (request.prompt.length() > 0) {
-    AiChatMessage user;
-    user.role = AiMessageRole::User;
-    user.content = request.prompt;
-    if (!request.addMessage(user)) {
+    if (!request.addMessage(AiMessageRole::User, request.prompt)) {
       outErrorMessage = "Unable to append prompt as user message";
       return false;
     }

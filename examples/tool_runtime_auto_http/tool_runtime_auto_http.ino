@@ -92,7 +92,6 @@ void runHttpAutoToolLoop() {
 
   AiInvokeResponse response;
   AiToolHttpLoopOptions loopOptions;
-  loopOptions.maxRounds = 2;
   loopOptions.continueOnToolError = false;
 
   const bool ok = g_toolExecutor.invokeHttpWithTools(

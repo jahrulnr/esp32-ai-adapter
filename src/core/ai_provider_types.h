@@ -123,6 +123,9 @@ struct AiToolDefinition {
   String name;
   String description;
   String inputSchemaJson;
+  String domain;
+  String workflow;
+  String findQuery;
 };
 
 struct AiToolCall {
@@ -241,11 +244,55 @@ struct AiInvokeRequest {
   AiStreamChunkCallback streamCallback = nullptr;
   void* streamUserContext = nullptr;
 
+  void reset() {
+    model = "";
+    prompt = "";
+    systemPrompt = "";
+    baseUrl = "";
+    apiKey = "";
+    requestId = "";
+    httpReferer = "";
+    appTitle = "";
+    bodySpool = AiRequestBodySpoolOptions{};
+    stream = false;
+    maxTokens = 512;
+    temperature = 0.7f;
+    timeoutMs = 45000;
+    preferPsrAm = true;
+    enableVision = false;
+    enableAudio = false;
+    enableToolCalls = false;
+    enableRealtime = false;
+    audioOutputFormat = "";
+    audioOutputVoice = "";
+    toolChoice = "";
+    messageCount = 0;
+    toolCount = 0;
+    streamCallback = nullptr;
+    streamUserContext = nullptr;
+  }
+
   bool addMessage(const AiChatMessage& message) {
     if (messageCount >= messages.size()) {
       return false;
     }
     messages[messageCount++] = message;
+    return true;
+  }
+
+  bool addMessage(AiMessageRole role,
+                  const String& content,
+                  const String& toolCallId = String(),
+                  const String& toolName = String()) {
+    if (messageCount >= messages.size()) {
+      return false;
+    }
+    AiChatMessage& message = messages[messageCount++];
+    message.role = role;
+    message.content = content;
+    message.partCount = 0;
+    message.toolCallId = toolCallId;
+    message.toolName = toolName;
     return true;
   }
 

@@ -1,13 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 
-#include <core/ai_provider_client.h>
-#include <core/ai_session_client.h>
-#include <core/ai_tool_runtime.h>
-#include <core/ai_tool_runtime_facade.h>
-#include <providers/default_provider_bundle.h>
-#include <transport/custom_http_transport.h>
-#include <transport/websocket_session_transport.h>
+#include <AiProviderKit.h>
 
 using namespace ai::provider;
 
@@ -17,14 +11,7 @@ constexpr const char* kOpenAiApiKey = "YOUR_OPENAI_API_KEY";
 
 constexpr uint32_t kWifiConnectTimeoutMs = 20000;
 
-CustomHttpTransport g_httpTransport;
-AiProviderRegistry g_registry;
-DefaultProviderBundle g_providers;
-AiProviderClient g_httpClient(g_httpTransport, g_registry);
-WebSocketSessionTransport g_wsTransport;
-AiSessionClient g_sessionClient(g_wsTransport, g_registry);
-AiToolRuntimeRegistry g_toolRegistry;
-AiToolRuntimeFacade g_facade(g_httpClient, g_sessionClient, g_toolRegistry);
+AiProviderKit g_ai;
 
 String g_sessionId;
 bool g_realtimeStarted = false;
@@ -72,19 +59,15 @@ bool onGetWeather(const AiToolCall& toolCall,
 }
 
 void runHttpWithFacade() {
-  AiInvokeRequest request;
-  request.model = "gpt-4o-mini";
-  request.apiKey = kOpenAiApiKey;
-  request.baseUrl = "https://api.openai.com/v1";
-  request.systemPrompt = "Gunakan tool kalau diperlukan, lalu jawab ringkas.";
-  request.prompt = "Tolong cek cuaca Jakarta pakai tool yang tersedia.";
-  request.enableToolCalls = true;
-  request.toolChoice = "auto";
-
   AiInvokeResponse response;
   String error;
-  const bool ok = g_facade.invokeHttpWithTools(
-      ProviderKind::OpenAI, request, response, error, AiToolHttpLoopOptions{});
+  const bool ok = g_ai.llmWithTools(
+      ProviderKind::OpenAI,
+      "Tolong cek cuaca Jakarta pakai tool yang tersedia.",
+      false,
+      response,
+      error,
+      AiToolHttpLoopOptions{});
 
   Serial.printf("HTTP facade ok=%s status=%u code=%s\n",
                 ok ? "true" : "false",
@@ -138,12 +121,6 @@ void onRealtimeDone(const String& sessionId,
 }
 
 void startRealtimeWithFacade() {
-  AiInvokeRequest request;
-  request.model = "gpt-realtime";
-  request.apiKey = kOpenAiApiKey;
-  request.enableToolCalls = true;
-  request.toolChoice = "auto";
-
   AiRealtimeSessionConfig sessionConfig;
   sessionConfig.timeoutMs = 60000;
 
@@ -153,8 +130,8 @@ void startRealtimeWithFacade() {
   callbacks.onDone = onRealtimeDone;
 
   String error;
-  if (!g_facade.startRealtimeSessionWithTools(
-          ProviderKind::OpenAI, request, sessionConfig, callbacks, g_sessionId, error)) {
+  if (!g_ai.realtimeStartWithTools(
+          ProviderKind::OpenAI, sessionConfig, callbacks, g_sessionId, error)) {
     Serial.printf("startRealtimeSessionWithTools failed: %s\n", error.c_str());
     return;
   }
@@ -167,7 +144,10 @@ void setup() {
   Serial.begin(115200);
   delay(300);
 
-  g_providers.registerAll(g_registry);
+  g_ai.setApiKey(ProviderKind::OpenAI, kOpenAiApiKey);
+  g_ai.setLlmModel(ProviderKind::OpenAI, "gpt-4o-mini");
+  g_ai.setRealtimeModel(ProviderKind::OpenAI, "gpt-realtime");
+  g_ai.defaults().llmSystemPrompt = "Gunakan tool kalau diperlukan, lalu jawab ringkas.";
 
   AiToolDefinition tool;
   tool.name = "get_weather";
@@ -175,7 +155,7 @@ void setup() {
   tool.inputSchemaJson =
       "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}";
   String registerError;
-  if (!g_toolRegistry.registerTool(tool, onGetWeather, nullptr, registerError)) {
+  if (!g_ai.tools().registerTool(tool, onGetWeather, nullptr, registerError)) {
     Serial.printf("registerTool failed: %s\n", registerError.c_str());
     return;
   }
@@ -200,14 +180,13 @@ void loop() {
     return;
   }
 
-  g_facade.pollRealtime();
+  g_ai.poll();
 
-  if (!g_realtimePromptSent && g_facade.isSessionOpen(g_sessionId)) {
+  if (!g_realtimePromptSent && g_ai.isRealtimeOpen(g_sessionId)) {
     String error;
-    if (!g_facade.sendText(
-            g_sessionId,
-            "Tolong cek cuaca Jakarta pakai tool yang tersedia, lalu jawab singkat.",
-            error)) {
+    if (!g_ai.realtimeSendText(g_sessionId,
+                               "Tolong cek cuaca Jakarta pakai tool yang tersedia, lalu jawab singkat.",
+                               error)) {
       Serial.printf("sendText failed: %s\n", error.c_str());
     } else {
       g_realtimePromptSent = true;

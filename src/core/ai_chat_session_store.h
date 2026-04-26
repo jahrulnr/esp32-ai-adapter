@@ -19,6 +19,8 @@ struct AiChatSessionStoreConfig {
   uint32_t softFileBytes = 24U * 1024U;
   uint32_t hardTotalBytes = 256U * 1024U;
   uint8_t retainedTurnsAfterCompact = 10;
+  uint8_t compactEveryTurns = 2;
+  uint16_t summaryMaxChars = 768;
   uint16_t maxTextChars = 512;
 };
 
@@ -131,6 +133,9 @@ class AiChatSessionStore : public IAiChatSessionStore {
   uint32_t refreshBytesLocked(SessionMeta& meta);
 
   bool compactSessionLocked(SessionMeta& meta, uint8_t retainTurns);
+  bool buildCompactSummaryLocked(const SessionMeta& meta,
+                                 size_t olderTurnCount,
+                                 String& outSummary);
   bool loadTailTurnsLocked(const SessionMeta& meta,
                            TurnRecord* outTurns,
                            size_t maxTurns,

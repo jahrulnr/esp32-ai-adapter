@@ -1,9 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 
-#include <core/ai_provider_client.h>
-#include <providers/default_provider_bundle.h>
-#include <transport/custom_http_transport.h>
+#include <AiProviderKit.h>
 
 using namespace ai::provider;
 
@@ -12,11 +10,7 @@ constexpr const char* kWifiPassword = "YOUR_WIFI_PASSWORD";
 constexpr const char* kOpenAiApiKey = "YOUR_OPENAI_API_KEY";
 
 constexpr uint32_t kWifiConnectTimeoutMs = 20000;
-
-CustomHttpTransport g_transport;
-AiProviderRegistry g_registry;
-DefaultProviderBundle g_providers;
-AiProviderClient g_client(g_transport, g_registry);
+AiProviderKit g_ai;
 
 bool hasPlaceholderValue(const char* value) {
   if (value == nullptr) {
@@ -49,16 +43,10 @@ bool connectWifi() {
 }
 
 void runBasicSyncCall() {
-  AiInvokeRequest request;
-  request.model = "gpt-4o-mini";
-  request.prompt = "Jelaskan ESP-NOW dalam 3 poin singkat.";
-  request.systemPrompt = "Jawab ringkas dalam Bahasa Indonesia.";
-  request.apiKey = kOpenAiApiKey;
-  request.baseUrl = "https://api.openai.com/v1";
-  request.timeoutMs = 45000;
-
   AiInvokeResponse response;
-  const bool ok = g_client.invoke(ProviderKind::OpenAI, request, response);
+  String error;
+  const bool ok = g_ai.llm(
+      ProviderKind::OpenAI, "Jelaskan ESP-NOW dalam 3 poin singkat.", false, response, error);
 
   Serial.printf("invoke ok=%s status=%u code=%s\n",
                 ok ? "true" : "false",
@@ -73,14 +61,18 @@ void runBasicSyncCall() {
   if (response.errorMessage.length() > 0) {
     Serial.printf("error=%s\n", response.errorMessage.c_str());
   }
+  if (error.length() > 0) {
+    Serial.printf("facade_error=%s\n", error.c_str());
+  }
 }
 
 void setup() {
   Serial.begin(115200);
   delay(300);
 
-  const bool registryOk = g_providers.registerAll(g_registry);
-  Serial.printf("registerAll: %s\n", registryOk ? "ok" : "partial/fail");
+  g_ai.setApiKey(ProviderKind::OpenAI, kOpenAiApiKey);
+  g_ai.setLlmModel(ProviderKind::OpenAI, "gpt-4o-mini");
+  g_ai.defaults().llmSystemPrompt = "Jawab ringkas dalam Bahasa Indonesia.";
 
   if (hasPlaceholderValue(kWifiSsid) || hasPlaceholderValue(kWifiPassword) ||
       hasPlaceholderValue(kOpenAiApiKey)) {

@@ -150,6 +150,9 @@ bool AiChatSessionStore::markInFlight(const char* sessionId, int delta, uint32_t
 
   meta->lastActiveMs = nowMs;
   meta->expiresAtMs = nowMs + config_.expiryMs;
+  if (meta->inFlight == 0 && config_.compactEveryTurns > 0) {
+    compactSessionLocked(*meta, config_.retainedTurnsAfterCompact);
+  }
   unlockSemaphore(mutex_);
   return true;
 }
@@ -253,33 +256,22 @@ bool AiChatSessionStore::buildContextMessages(const char* sessionId,
 
   request.messageCount = 0;
   if (systemPrompt.length() > 0) {
-    AiChatMessage msg;
-    msg.role = AiMessageRole::System;
-    msg.content = systemPrompt;
-    request.addMessage(msg);
+    request.addMessage(AiMessageRole::System, systemPrompt);
   }
 
   if (totalTurns > turnCount && turnCount > 0) {
-    AiChatMessage summary;
-    summary.role = AiMessageRole::Assistant;
-    summary.content = String("Summary: ") + String(totalTurns - turnCount) +
-                      String(" earlier turns were compacted. Use latest context.");
-    request.addMessage(summary);
+    request.addMessage(AiMessageRole::Assistant,
+                       String("Summary: ") + String(totalTurns - turnCount) +
+                           String(" earlier turns were compacted. Use latest context."));
   }
 
   for (size_t i = 0; i < turnCount; ++i) {
-    AiChatMessage msg;
-    msg.role = roleFromText(turns[i].role);
-    msg.content = turns[i].text;
-    if (!request.addMessage(msg)) {
+    if (!request.addMessage(roleFromText(turns[i].role), turns[i].text)) {
       break;
     }
   }
 
-  AiChatMessage user;
-  user.role = AiMessageRole::User;
-  user.content = prompt;
-  request.addMessage(user);
+  request.addMessage(AiMessageRole::User, prompt);
 
   meta->lastActiveMs = millis();
   meta->expiresAtMs = meta->lastActiveMs + config_.expiryMs;
@@ -481,6 +473,9 @@ void AiChatSessionStore::applyConfigLocked(const AiChatSessionStoreConfig& confi
 
   if (config_.retainedTurnsAfterCompact == 0) {
     config_.retainedTurnsAfterCompact = 1;
+  }
+  if (config_.summaryMaxChars == 0) {
+    config_.summaryMaxChars = 256;
   }
 
   recordLimit_ = config_.maxRecords;
@@ -697,11 +692,16 @@ bool AiChatSessionStore::compactSessionLocked(SessionMeta& meta, uint8_t retainT
     return false;
   }
 
+  String compactSummary;
+  if (!buildCompactSummaryLocked(meta, totalTurns - count, compactSummary)) {
+    compactSummary = String("Summary: ") + String(totalTurns - count) +
+                     String(" older turns compacted to preserve memory.");
+  }
+
   SpiJsonDocument summary;
   summary["tsMs"] = millis();
   summary["role"] = "assistant";
-  summary["text"] = String("Summary: ") + String(totalTurns - count) +
-                    String(" older turns compacted to preserve memory.");
+  summary["text"] = compactSummary;
   String line;
   serializeJson(summary, line);
   tmp.print(line);
@@ -728,6 +728,61 @@ bool AiChatSessionStore::compactSessionLocked(SessionMeta& meta, uint8_t retainT
 
   meta.lastCompactedAtMs = millis();
   meta.bytes = fileSizeLocked(srcPath.c_str());
+  return true;
+}
+
+bool AiChatSessionStore::buildCompactSummaryLocked(const SessionMeta& meta,
+                                                   size_t olderTurnCount,
+                                                   String& outSummary) {
+  outSummary = "";
+  if (!meta.used || storage_ == nullptr || olderTurnCount == 0) {
+    return false;
+  }
+
+  const String path = sessionPathLocked(meta.id);
+  File file = storage_->open(path.c_str(), FILE_READ);
+  if (!file) {
+    return false;
+  }
+
+  outSummary.reserve(config_.summaryMaxChars + 16U);
+  outSummary = "Summary: ";
+  size_t consumed = 0;
+  while (file.available() && consumed < olderTurnCount) {
+    const String line = file.readStringUntil('\n');
+    TurnRecord parsed;
+    if (!parseTurnLine(line, parsed)) {
+      continue;
+    }
+    ++consumed;
+
+    String item = parsed.role;
+    item += ": ";
+    item += parsed.text;
+    item.replace('\n', ' ');
+    item.replace('\r', ' ');
+    item.trim();
+    if (item.length() == 0) {
+      continue;
+    }
+
+    if (outSummary.length() > 9) {
+      outSummary += " | ";
+    }
+    outSummary += item;
+    if (outSummary.length() >= config_.summaryMaxChars) {
+      outSummary.remove(config_.summaryMaxChars);
+      outSummary.trim();
+      break;
+    }
+  }
+
+  file.close();
+
+  if (outSummary.length() <= 9) {
+    outSummary = String("Summary: ") + String(olderTurnCount) +
+                 String(" older turns compacted.");
+  }
   return true;
 }
 

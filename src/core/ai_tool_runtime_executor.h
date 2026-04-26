@@ -6,8 +6,11 @@
 
 namespace ai::provider {
 
+#ifndef AIPROVIDERKIT_TOOL_LOOP_MAX_ROUNDS
+#define AIPROVIDERKIT_TOOL_LOOP_MAX_ROUNDS 50U
+#endif
+
 struct AiToolHttpLoopOptions {
-  size_t maxRounds = 2;
   bool continueOnToolError = false;
 };
 
