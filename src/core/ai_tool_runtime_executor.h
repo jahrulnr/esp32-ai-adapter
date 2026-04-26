@@ -31,8 +31,19 @@ class AiToolRuntimeExecutor {
                           String& outErrorMessage) const;
 
  private:
+  struct ToolLoopPolicyState {
+    std::array<String, kAiMaxToolCalls> successfulTools;
+    size_t successfulToolCount = 0;
+  };
+
   static String toJsonErrorObject(const String& message);
+  static String toJsonErrorObject(const String& code, const String& message, const String& nextTool);
   static bool ensureSeedMessages(AiInvokeRequest& request, String& outErrorMessage);
+  bool checkPrerequisites(const AiToolCall& call,
+                          const ToolLoopPolicyState& state,
+                          String& outResultJson) const;
+  static void recordSuccessfulTool(ToolLoopPolicyState& state, const String& toolName);
+  static bool hasSuccessfulTool(const ToolLoopPolicyState& state, const String& toolName);
 
   const AiToolRuntimeRegistry& registry_;
 };

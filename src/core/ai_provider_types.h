@@ -126,6 +126,7 @@ struct AiToolDefinition {
   String domain;
   String workflow;
   String findQuery;
+  String requiresJson;
 };
 
 struct AiToolCall {

@@ -397,6 +397,14 @@ size_t AiToolRuntimeRegistry::size() const {
   return count;
 }
 
+String AiToolRuntimeRegistry::requiredToolsJsonFor(const String& toolName) const {
+  const Entry* entry = findByName(toolName);
+  if (entry == nullptr) {
+    return String();
+  }
+  return entry->definition.requiresJson;
+}
+
 AiToolRuntimeRegistry::Entry* AiToolRuntimeRegistry::findMutableByName(const String& toolName) {
   for (size_t i = 0; i < activeMaxEntries_; ++i) {
     Entry& entry = entries_[i];

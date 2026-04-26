@@ -232,6 +232,7 @@ bool AiToolRuntimeExecutor::invokeHttpWithTools(
     }
   }
 
+  ToolLoopPolicyState policyState{};
   for (size_t round = 0; round < AIPROVIDERKIT_TOOL_LOOP_MAX_ROUNDS; ++round) {
     AiInvokeResponse response;
     const bool ok = client.invoke(provider, working, response);
@@ -263,13 +264,17 @@ bool AiToolRuntimeExecutor::invokeHttpWithTools(
 
       String toolResult;
       String toolError;
-      if (!registry_.onCall(call, toolResult, toolError)) {
+      if (!checkPrerequisites(call, policyState, toolResult)) {
+        toolError = "prerequisite_required";
+      } else if (!registry_.onCall(call, toolResult, toolError)) {
         if (!options.continueOnToolError) {
           outErrorMessage = toolError.length() > 0 ? toolError : String("Tool onCall failed");
           releaseInvokeRequest(workingPtr);
           return false;
         }
         toolResult = toJsonErrorObject(toolError.length() > 0 ? toolError : String("onCall failed"));
+      } else {
+        recordSuccessfulTool(policyState, call.name);
       }
 
       if (call.name.equalsIgnoreCase("tools.find")) {
@@ -332,6 +337,85 @@ String AiToolRuntimeExecutor::toJsonErrorObject(const String& message) {
   }
 
   return String("{\"error\":\"") + escaped + String("\"}");
+}
+
+String AiToolRuntimeExecutor::toJsonErrorObject(const String& code,
+                                                const String& message,
+                                                const String& nextTool) {
+  String out = "{\"error\":{\"code\":\"";
+  out += code;
+  out += "\",\"message\":\"";
+  for (size_t i = 0; i < message.length(); ++i) {
+    const char c = message[i];
+    if (c == '\\' || c == '"') {
+      out += '\\';
+    }
+    out += c;
+  }
+  out += "\"";
+  if (nextTool.length() > 0) {
+    out += ",\"nextTool\":\"";
+    out += nextTool;
+    out += "\"";
+  }
+  out += "}}";
+  return out;
+}
+
+bool AiToolRuntimeExecutor::hasSuccessfulTool(const ToolLoopPolicyState& state, const String& toolName) {
+  for (size_t i = 0; i < state.successfulToolCount; ++i) {
+    if (state.successfulTools[i].equalsIgnoreCase(toolName)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void AiToolRuntimeExecutor::recordSuccessfulTool(ToolLoopPolicyState& state, const String& toolName) {
+  if (toolName.length() == 0 || hasSuccessfulTool(state, toolName)) {
+    return;
+  }
+  if (state.successfulToolCount >= state.successfulTools.size()) {
+    return;
+  }
+  state.successfulTools[state.successfulToolCount++] = toolName;
+}
+
+bool AiToolRuntimeExecutor::checkPrerequisites(const AiToolCall& call,
+                                               const ToolLoopPolicyState& state,
+                                               String& outResultJson) const {
+  outResultJson = String();
+  const String requiresJson = registry_.requiredToolsJsonFor(call.name);
+  if (requiresJson.length() == 0) {
+    return true;
+  }
+
+  SpiJsonDocument doc;
+  if (deserializeJson(doc, requiresJson) != DeserializationError::Ok) {
+    return true;
+  }
+
+  JsonArrayConst requiredTools = doc.as<JsonArrayConst>();
+  if (requiredTools.isNull() || requiredTools.size() == 0) {
+    return true;
+  }
+
+  for (JsonVariantConst item : requiredTools) {
+    if (!item.is<const char*>()) {
+      continue;
+    }
+    const String requiredTool = item.as<const char*>();
+    if (requiredTool.length() == 0 || hasSuccessfulTool(state, requiredTool)) {
+      continue;
+    }
+
+    outResultJson = toJsonErrorObject("prerequisite_required",
+                                      String("Call ") + requiredTool + " before " + call.name,
+                                      requiredTool);
+    return false;
+  }
+
+  return true;
 }
 
 bool AiToolRuntimeExecutor::ensureSeedMessages(AiInvokeRequest& request, String& outErrorMessage) {

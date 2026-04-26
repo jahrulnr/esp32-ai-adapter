@@ -50,6 +50,7 @@ class AiToolRuntimeRegistry {
                                                 String& outErrorMessage) const;
 
   size_t size() const;
+  String requiredToolsJsonFor(const String& toolName) const;
 
  private:
   struct Entry {
